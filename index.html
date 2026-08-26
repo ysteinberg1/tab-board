@@ -27,7 +27,7 @@
     --hot:#C2543F;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0}
+  html,body{margin:0;padding:0; min-height:100%}
   body{
     background:var(--ground); color:var(--ink);
     font-family:"Instrument Sans",system-ui,sans-serif;
@@ -39,6 +39,8 @@
     padding:13px 22px; border-bottom:1px solid var(--rule);
     background:var(--ground); position:sticky; top:0; z-index:20;
   }
+  .rail-side{display:flex; align-items:center; gap:14px; flex:1}
+  .rail-side.right{justify-content:flex-end}
   .rail h1{
     margin:0; font-family:"Archivo",sans-serif;
     font-variation-settings:"wdth" 118,"wght" 700;
@@ -82,7 +84,7 @@
 
   .board{
     padding:22px; display:grid;
-    grid-template-columns:repeat(auto-fill,minmax(272px,1fr));
+    grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
     gap:18px; align-items:start;
   }
   .card{
@@ -131,15 +133,15 @@
   .card-head.grab{cursor:grab}
   .card-head.grab:active{cursor:grabbing}
   .name-wrap{flex:1; min-width:0}
-  .name-row{display:flex; align-items:baseline; gap:5px; flex-wrap:wrap}
   .card-name{
     margin:0; font-family:"Archivo",sans-serif;
     font-variation-settings:"wdth" 112,"wght" 700;
-    font-size:13.5px; letter-spacing:.055em; text-transform:uppercase; line-height:1.3;
+    font-size:13.5px; letter-spacing:.055em; text-transform:uppercase; line-height:1.4;
   }
   .open{
-    flex:none; border:0; background:transparent; cursor:pointer; padding:1px;
-    color:var(--ink-faint); line-height:0; border-radius:2px; align-self:center;
+    display:inline-flex; vertical-align:-2px;
+    border:0; background:transparent; cursor:pointer; padding:2px;
+    color:var(--ink-faint); line-height:0; border-radius:2px;
   }
   .open:hover{color:var(--ink); background:rgba(255,255,255,.6)}
   .open:focus-visible{outline:2px solid var(--ink); outline-offset:1px}
@@ -152,8 +154,8 @@
   }
   .status-below{margin-top:5px}
   .status-inline{display:none}
-  @container (min-width: 336px){
-    .status-inline{display:inline-block; max-width:130px}
+  @container (min-width: 300px){
+    .status-inline{display:inline-block; max-width:150px}
     .status-below{display:none}
   }
 
@@ -267,7 +269,11 @@
   .paste:hover{color:var(--ink); border-color:var(--ink); background:#fff}
   .paste:focus-visible{outline:2px solid var(--ink); outline-offset:1px}
 
-  .veil{position:fixed; inset:0; background:rgba(42,38,23,.38); display:none; place-items:center; z-index:40}
+  .veil{
+    position:fixed; top:0; right:0; bottom:0; left:0;
+    width:100vw; height:100vh;
+    background:rgba(42,38,23,.38); display:none; place-items:center; z-index:9999;
+  }
   .veil.open{display:grid}
   .modal{
     width:min(420px,92vw); background:var(--sticky);
@@ -310,15 +316,18 @@
 <body>
 
 <div class="rail">
-  <h1>Tab Board</h1>
-  <div class="picker" id="picker">
-    <label for="who">Viewing</label>
-    <select id="who"></select>
-    <span class="readonly" id="ro">Read only</span>
+  <div class="rail-side left">
+    <h1>Sticky Notes</h1>
+    <div class="picker" id="picker">
+      <label for="who">Viewing</label>
+      <select id="who"></select>
+      <span class="readonly" id="ro">Read only</span>
+    </div>
   </div>
-  <span class="spacer"></span>
-  <span class="saving" id="saving">Saving</span>
   <button class="btn" id="pinBtn">Pin a deal</button>
+  <div class="rail-side right">
+    <span class="saving" id="saving">Saving</span>
+  </div>
 </div>
 
 <div class="board" id="board"></div>
@@ -338,15 +347,23 @@
    CONFIG — the only things you should ever need to change
    ============================================================ */
 const CFG = {
-  NOTES_COL:  "long_text_mm6khzqt",   // Salesman Notes (long text)
-  LINKS_COL:  "long_text_mm6k5rkn",   // Tab Board Links (long text)
-  STATUS_COL: null,                    // null = auto-detect the first status column
-  CLOSED_LABELS: ["Won","Lost"],       // labels that trigger the clearing ribbon
+  NOTES_COL:   "long_text_mm6khzqt",  // Sales notes (long text)
+  LINKS_COL:   "long_text_mm6k5rkn",  // Links (long text)
+  STATUS_COL:  "deal_stage",          // Stage
+  ADDRESS_COL: "location_mkv04x3y",   // Facility Address
+  CLOSED_LABELS: ["Won","Lost","Won- Move to PM"],  // labels that trigger the clearing ribbon
   CLEAR_AFTER: 3,                      // days a closed deal stays on the board
   WARM_AT: 21,                         // days untouched -> amber badge
   HOT_AT: 42,                          // days untouched -> red badge
   SHOW_LINKS: 3,                       // links shown before the "more" triangle
   MAX_ITEMS: 500,                      // deals pulled from the board
+  // Only these people show up in the "Viewing" picker (plus whoever is
+  // actually logged in, so an owner previewing always sees themselves too).
+  SALES_TEAM: [
+    {id:"64185041", name:"Ari Weber"},
+    {id:"98067893", name:"Chuny Koenig"},
+    {id:"64132011", name:"Shragie Gobioff"},
+  ],
 };
 
 const DAY = 86400000;
@@ -525,7 +542,6 @@ async function loadBoard(){
         }
       }
       me { id name is_admin }
-      users (limit: 200) { id name enabled }
     }
   `, {board: [String(boardId)]});
 
@@ -537,15 +553,13 @@ async function loadBoard(){
   const ownerIds = new Set((board.owners||[]).map(o => String(o.id)));
   isOwner = data.me.is_admin === true || ownerIds.has(meId);
 
-  people = (data.users||[])
-    .filter(u => u.enabled !== false)
-    .map(u => ({id:String(u.id), name:u.name}))
-    .sort((a,b) => a.name.localeCompare(b.name));
+  /* the picker only ever shows the sales team, plus whoever is actually
+     logged in — so an owner previewing the board still sees themselves */
+  people = CFG.SALES_TEAM.slice();
   if(!people.some(p => p.id === meId)) people.unshift({id:meId, name:data.me.name});
 
   /* status column */
-  const statusCols = board.columns.filter(c => c.type === "status" || c.type === "color");
-  statusColId = CFG.STATUS_COL || (statusCols[0] && statusCols[0].id) || null;
+  statusColId = CFG.STATUS_COL;
   const statusCol = board.columns.find(c => c.id === statusColId);
   statusColors = {};
   if(statusCol && statusCol.settings_str){
@@ -582,6 +596,7 @@ async function loadBoard(){
       id: String(it.id),
       name: it.name,
       stage: (st && st.text) || "",
+      address: (cv[CFG.ADDRESS_COL] && cv[CFG.ADDRESS_COL].text) || "",
       closedAt,
       notes: (cv[CFG.NOTES_COL] && cv[CFG.NOTES_COL].text) || "",
       links: parseLinks(cv[CFG.LINKS_COL] && cv[CFG.LINKS_COL].text),
@@ -770,13 +785,6 @@ function slipEl(link, deal){
   });
   li.addEventListener("dragend", () => { dragLink=null; li.classList.remove("ghost"); });
 
-  if(!deal){
-    const p = document.createElement("button");
-    p.className="promote"; p.textContent="Make a deal";
-    p.onclick = () => createProspect(link);
-    li.appendChild(p);
-  }
-
   const tools = document.createElement("div");
   tools.className="tools";
 
@@ -856,12 +864,12 @@ function cardEl({deal, pin, index}){
 
   const nameWrap = document.createElement("div");
   nameWrap.className="name-wrap";
-  const nameRow = document.createElement("div");
-  nameRow.className="name-row";
   const h3 = document.createElement("h3");
   h3.className="card-name"; h3.textContent = isLoose ? "Loose Ends" : deal.name;
-  nameRow.appendChild(h3);
   if(deal){
+    /* the open-in-Monday icon is an inline child of the heading itself,
+       not a flex sibling — so it always sits right after the trailing
+       word instead of being pushed to a line of its own */
     const op = document.createElement("button");
     op.className="open"; op.innerHTML=ICON_OPEN;
     op.title="Open in Monday"; op.setAttribute("aria-label","Open "+deal.name+" in Monday");
@@ -869,9 +877,10 @@ function cardEl({deal, pin, index}){
       e.stopPropagation();
       monday.execute("openItemCard", {itemId: Number(deal.id)});
     };
-    nameRow.appendChild(op);
+    h3.appendChild(document.createTextNode("\u2009"));
+    h3.appendChild(op);
   }
-  nameWrap.appendChild(nameRow);
+  nameWrap.appendChild(h3);
   if(deal) nameWrap.appendChild(statusEl(deal.stage,"status-below"));
   head.appendChild(nameWrap);
 
@@ -1116,40 +1125,19 @@ function drawResults(q){
     const btn = document.createElement("button");
     const nm = document.createElement("span");
     nm.textContent = d.name; nm.style.flex="1";
-    btn.appendChild(nm); btn.appendChild(statusEl(d.stage));
+    btn.appendChild(nm);
+    if(d.address){
+      const addr = document.createElement("span");
+      addr.style.cssText = "font-size:11px;color:var(--ink-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%;";
+      addr.textContent = d.address;
+      btn.appendChild(addr);
+    }
     btn.onclick = () => {
       rec.pinned.unshift({dealId:d.id, folded:false, aside:false, touchedAt:Date.now()});
       saveUserBoard(viewing); closePin(); render();
     };
     li.appendChild(btn); results.appendChild(li);
   });
-}
-
-async function createProspect(link){
-  const name = prompt("New prospect name:", link.title.slice(0,40));
-  if(!name) return;
-  saveStart();
-  try{
-    const data = await api(`
-      mutation ($board: ID!, $name: String!) {
-        create_item (board_id:$board, item_name:$name) { id name }
-      }
-    `, {board:String(boardId), name});
-    const id = String(data.create_item.id);
-    const deal = {id, name:data.create_item.name, stage:"", closedAt:null, notes:"", links:[link]};
-    deals.unshift(deal); dealsById.set(id, deal);
-
-    const rec = myBoard();
-    rec.loose = rec.loose.filter(l => l !== link);
-    rec.pinned.unshift({dealId:id, folded:false, aside:false, touchedAt:Date.now()});
-
-    saveDone(true);
-    saveLinks(deal); saveUserBoard(viewing);
-    render();
-  }catch(e){
-    console.error(e);
-    saveDone(false, "Could not create");
-  }
 }
 
 /* ============================================================
