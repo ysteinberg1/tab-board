@@ -85,10 +85,18 @@
   .btn.stamp{
     font-family:"Archivo",sans-serif; font-variation-settings:"wdth" 112,"wght" 700;
     font-size:12.5px; letter-spacing:.09em; text-transform:uppercase;
-    color:#fff; background:var(--ink); border:1px solid var(--ink);
+    color:var(--ink); background:#E8BE4E; border:1px solid #D6A836;
     padding:9px 22px;
+    box-shadow:0 3px 0 #C79A2E;
+    transition:transform .08s ease, box-shadow .08s ease, background .12s ease;
   }
-  .btn.stamp:hover:not(:disabled){background:#3a3423; transform:translateY(-1px)}
+  .btn.stamp:hover:not(:disabled){
+    background:#ECC65E; transform:translateY(-1px); box-shadow:0 4px 0 #C79A2E;
+  }
+  .btn.stamp:active:not(:disabled){
+    transform:translateY(2px); box-shadow:0 1px 0 #C79A2E;
+  }
+  .btn.stamp:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
 
   .board{
     padding:22px; display:grid;
@@ -332,7 +340,7 @@
       <span class="readonly" id="ro">Read only</span>
     </div>
   </div>
-  <button class="btn stamp" id="pinBtn">Pin a Deal</button>
+  <button class="btn stamp" id="pinBtn">+ Pin a Deal</button>
   <div class="rail-side right">
     <span class="saving" id="saving">Saving</span>
   </div>
@@ -914,7 +922,15 @@ function cardEl({deal, pin, index}){
     aside.setAttribute("aria-label", pin.aside ? "Bring back" : "Set aside");
     aside.onclick = e => {
       e.stopPropagation();
-      pin.aside = !pin.aside; pin.folded = pin.aside;
+      const goingAside = !pin.aside;
+      pin.aside = goingAside; pin.folded = goingAside;
+      if(goingAside){
+        /* setting aside sends it to the bottom, for real, once —
+           bringing it back later leaves it exactly where it is */
+        const rec = myBoard();
+        const idx = rec.pinned.indexOf(pin);
+        if(idx > -1){ rec.pinned.splice(idx,1); rec.pinned.push(pin); }
+      }
       saveUserBoard(viewing); render();
     };
     controls.appendChild(aside);
@@ -1082,8 +1098,9 @@ function render(justAdded){
 
   board.appendChild(cardEl({deal:null, pin:null, index:-1}));
 
+  /* order is just the array's real order — set-aside moves a card to the
+     end once, on purpose; bringing it back never moves it again */
   const order = rec.pinned.map((p,i) => ({p,i}));
-  order.sort((a,x) => (a.p.aside?1:0) - (x.p.aside?1:0));
 
   order.forEach(({p,i}) => {
     const deal = dealsById.get(p.dealId);
