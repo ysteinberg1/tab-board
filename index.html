@@ -82,6 +82,14 @@
   .btn:disabled{opacity:.4; cursor:not-allowed}
   .btn:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
 
+  .btn.stamp{
+    font-family:"Archivo",sans-serif; font-variation-settings:"wdth" 112,"wght" 700;
+    font-size:12.5px; letter-spacing:.09em; text-transform:uppercase;
+    color:#fff; background:var(--ink); border:1px solid var(--ink);
+    padding:9px 22px;
+  }
+  .btn.stamp:hover:not(:disabled){background:#3a3423; transform:translateY(-1px)}
+
   .board{
     padding:22px; display:grid;
     grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
@@ -324,7 +332,7 @@
       <span class="readonly" id="ro">Read only</span>
     </div>
   </div>
-  <button class="btn" id="pinBtn">Pin a deal</button>
+  <button class="btn stamp" id="pinBtn">Pin a Deal</button>
   <div class="rail-side right">
     <span class="saving" id="saving">Saving</span>
   </div>
@@ -527,23 +535,24 @@ function serializeLinks(links){
 }
 
 async function loadBoard(){
+  const neededCols = [CFG.STATUS_COL, CFG.ADDRESS_COL, CFG.NOTES_COL, CFG.LINKS_COL];
   const data = await api(`
-    query ($board: [ID!]) {
+    query ($board: [ID!], $cols: [String!]) {
       boards (ids: $board) {
         name
         owners { id }
-        columns { id title type settings_str }
+        columns (ids: $cols) { id title type settings_str }
         items_page (limit: ${CFG.MAX_ITEMS}) {
           items {
             id
             name
-            column_values { id text value }
+            column_values (ids: $cols) { id text value }
           }
         }
       }
       me { id name is_admin }
     }
-  `, {board: [String(boardId)]});
+  `, {board: [String(boardId)], cols: neededCols});
 
   const board = data.boards && data.boards[0];
   if(!board) throw new Error("Board not found");
@@ -975,12 +984,11 @@ function cardEl({deal, pin, index}){
     s.textContent="Drop a tab here";
     hint.appendChild(s);
     const pb = document.createElement("button");
-    pb.className="paste"; pb.textContent="Paste"; pb.title="Paste a copied link";
-    pb.onclick = async () => {
-      let txt = "";
-      try{ txt = (await navigator.clipboard.readText() || "").trim(); }
-      catch{ txt = (prompt("Paste the link:") || "").trim(); }
-      if(!/^https?:\/\//i.test(txt)){ s.textContent="Clipboard has no link"; return; }
+    pb.className="paste"; pb.textContent="Paste"; pb.title="Paste a link you've copied";
+    pb.onclick = () => {
+      const txt = (prompt("Copy a link, then paste it here with Ctrl+V (Cmd+V on Mac):") || "").trim();
+      if(!txt) return;
+      if(!/^https?:\/\//i.test(txt)){ s.textContent="That doesn't look like a link"; return; }
       const link = addLink(txt.split(/\s+/)[0], deal);
       if(!link){ s.textContent="Already on this note"; return; }
       render(link);
