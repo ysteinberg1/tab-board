@@ -388,7 +388,10 @@ const CFG = {
   WARM_AT: 21,                         // days untouched -> amber badge
   HOT_AT: 42,                          // days untouched -> red badge
   SHOW_LINKS: 3,                       // links shown before the "more" triangle
-  MAX_ITEMS: 500,                      // deals pulled from the board
+  MAX_ITEMS: 1000,                     // safety cap on the background search index
+                                        // (name/status/address only — the board itself
+                                        // can hold far more; pinned deals always load
+                                        // regardless of this number)
   // Only these people show up in the "Viewing" picker (plus whoever is
   // actually logged in, so an owner previewing always sees themselves too).
   SALES_TEAM: [
@@ -421,6 +424,9 @@ let statusColId = null;
 let statusColors = {};     // label -> hex
 
 let userBoards = new Map();  // userId -> {pinned:[{dealId,folded,aside,touchedAt}], loose:[], looseNote:""}
+
+let searchIndex = [];      // lightweight {id,name,stage,address,groupId} for every deal — loaded in the background
+let indexReady = false;    // true once searchIndex has finished its first load
 
 const expanded = new Set();
 const editing = new Set();
@@ -563,36 +569,44 @@ function serializeLinks(links){
   });
 }
 
-async function loadBoard(){
-  const neededCols = [CFG.STATUS_COL, CFG.ADDRESS_COL, CFG.NOTES_COL, CFG.LINKS_COL];
+/* full column set for an item we're actually going to show on the board */
+const DEAL_COLS = [CFG.STATUS_COL, CFG.ADDRESS_COL, CFG.NOTES_COL, CFG.LINKS_COL];
+
+function toDeal(it){
+  const cv = {};
+  (it.column_values||[]).forEach(c => cv[c.id] = c);
+  const st = cv[CFG.STATUS_COL];
+  let closedAt = null;
+  if(st && st.value){
+    try{
+      const v = JSON.parse(st.value);
+      if(v && v.changed_at) closedAt = Date.parse(v.changed_at);
+    }catch{}
+  }
+  return {
+    id: String(it.id),
+    name: it.name,
+    stage: (st && st.text) || "",
+    address: (cv[CFG.ADDRESS_COL] && cv[CFG.ADDRESS_COL].text) || "",
+    closedAt,
+    notes: (cv[CFG.NOTES_COL] && cv[CFG.NOTES_COL].text) || "",
+    links: parseLinks(cv[CFG.LINKS_COL] && cv[CFG.LINKS_COL].text),
+    groupId: it.group ? it.group.id : null,
+  };
+}
+
+/* board metadata only — no items. Fast, always needed at boot. */
+async function loadMeta(){
   const data = await api(`
-    query ($board: [ID!], $cols: [String!], $stickyGroup: [String!]) {
+    query ($board: [ID!], $cols: [String!]) {
       boards (ids: $board) {
         name
         owners { id }
         columns (ids: $cols) { id title type settings_str }
-        items_page (limit: ${CFG.MAX_ITEMS}) {
-          items {
-            id
-            name
-            group { id }
-            column_values (ids: $cols) { id text value }
-          }
-        }
-        groups (ids: $stickyGroup) {
-          items_page (limit: 200) {
-            items {
-              id
-              name
-              group { id }
-              column_values (ids: $cols) { id text value }
-            }
-          }
-        }
       }
       me { id name is_admin }
     }
-  `, {board: [String(boardId)], cols: neededCols, stickyGroup: [CFG.STICKY_GROUP]});
+  `, {board: [String(boardId)], cols: DEAL_COLS});
 
   const board = data.boards && data.boards[0];
   if(!board) throw new Error("Board not found");
@@ -629,39 +643,93 @@ async function loadBoard(){
     const missing = [CFG.NOTES_COL, CFG.LINKS_COL].filter(id => !has(id));
     throw new Error("SETUP:" + missing.join(", "));
   }
+}
 
-  const toDeal = it => {
-    const cv = {};
-    (it.column_values||[]).forEach(c => cv[c.id] = c);
-    const st = statusColId ? cv[statusColId] : null;
-    let closedAt = null;
-    if(st && st.value){
-      try{
-        const v = JSON.parse(st.value);
-        if(v && v.changed_at) closedAt = Date.parse(v.changed_at);
-      }catch{}
+/* fetch specific items by id — used for whatever a user actually has
+   pinned, instead of pulling the whole board every time the view opens */
+async function loadItemsByIds(ids){
+  if(!ids.length) return [];
+  const data = await api(`
+    query ($ids: [ID!], $cols: [String!]) {
+      items (ids: $ids) {
+        id
+        name
+        group { id }
+        column_values (ids: $cols) { id text value }
+      }
     }
-    return {
-      id: String(it.id),
-      name: it.name,
-      stage: (st && st.text) || "",
-      address: (cv[CFG.ADDRESS_COL] && cv[CFG.ADDRESS_COL].text) || "",
-      closedAt,
-      notes: (cv[CFG.NOTES_COL] && cv[CFG.NOTES_COL].text) || "",
-      links: parseLinks(cv[CFG.LINKS_COL] && cv[CFG.LINKS_COL].text),
-      groupId: it.group ? it.group.id : null,
-    };
-  };
+  `, {ids, cols: DEAL_COLS});
+  return (data.items||[]).map(toDeal);
+}
 
-  /* the Sticky Notes group is fetched on its own so a note is never lost
-     off the end of the general items_page on a board this size (800+ items) */
-  const seen = new Map();
-  (board.items_page.items||[]).forEach(it => seen.set(String(it.id), toDeal(it)));
-  const stickyGroup = (board.groups && board.groups[0]) || null;
-  ((stickyGroup && stickyGroup.items_page.items) || []).forEach(it => seen.set(String(it.id), toDeal(it)));
+/* the Sticky Notes group is small and bounded (only ever holds
+   not-yet-converted notes) — fetched in full every load so naming
+   never collides and a note is never missed regardless of board size */
+async function loadStickyGroup(){
+  const data = await api(`
+    query ($board: [ID!], $cols: [String!], $g: [String!]) {
+      boards (ids: $board) {
+        groups (ids: $g) {
+          items_page (limit: 200) {
+            items { id name group { id } column_values (ids: $cols) { id text value } }
+          }
+        }
+      }
+    }
+  `, {board: [String(boardId)], cols: DEAL_COLS, g: [CFG.STICKY_GROUP]});
+  const grp = data.boards && data.boards[0] && data.boards[0].groups && data.boards[0].groups[0];
+  return ((grp && grp.items_page.items) || []).map(toDeal);
+}
 
-  deals = Array.from(seen.values());
-  dealsById = new Map(deals.map(d => [d.id, d]));
+/* lightweight, paginated scan of the whole board — name/status/address
+   only, no notes or links — used solely to power the "pin a deal" search.
+   Runs in the background after the board itself is already on screen. */
+async function loadSearchIndex(){
+  const cols = [CFG.STATUS_COL, CFG.ADDRESS_COL];
+  const items = [];
+  try{
+    let data = await api(`
+      query ($board: [ID!], $cols: [String!]) {
+        boards (ids: $board) {
+          items_page (limit: 250) {
+            cursor
+            items { id name group { id } column_values (ids: $cols) { id text } }
+          }
+        }
+      }
+    `, {board: [String(boardId)], cols});
+    let page = data.boards && data.boards[0] && data.boards[0].items_page;
+    items.push(...((page && page.items) || []));
+    let cursor = page && page.cursor;
+    while(cursor && items.length < CFG.MAX_ITEMS){
+      const next = await api(`
+        query ($cursor: String!, $cols: [String!]) {
+          next_items_page (limit: 250, cursor: $cursor) {
+            cursor
+            items { id name group { id } column_values (ids: $cols) { id text } }
+          }
+        }
+      `, {cursor, cols});
+      const np = next.next_items_page;
+      items.push(...((np && np.items) || []));
+      cursor = np && np.cursor;
+    }
+    searchIndex = items.map(it => {
+      const cv = {};
+      (it.column_values||[]).forEach(c => cv[c.id] = c);
+      return {
+        id: String(it.id),
+        name: it.name,
+        stage: (cv[CFG.STATUS_COL] && cv[CFG.STATUS_COL].text) || "",
+        address: (cv[CFG.ADDRESS_COL] && cv[CFG.ADDRESS_COL].text) || "",
+        groupId: it.group ? it.group.id : null,
+      };
+    });
+  }catch(e){
+    console.warn("search index load failed", e);
+  }
+  indexReady = true;
+  if(veil.classList.contains("open")) drawResults(search.value);
 }
 
 async function loadUserBoard(userId){
@@ -1214,10 +1282,6 @@ function drawResults(q){
   const rec = myBoard();
   const taken = new Set(rec.pinned.map(p => p.dealId));
   const ql = q.toLowerCase();
-  const list = deals
-    .filter(d => !taken.has(d.id) && !isClosed(d) && !isBlankNote(d))
-    .filter(d => d.name.toLowerCase().includes(ql))
-    .slice(0, 40);
   results.innerHTML = "";
 
   const addLi = document.createElement("li");
@@ -1228,6 +1292,19 @@ function drawResults(q){
   addLi.appendChild(addBtn);
   addLi.style.cssText = "border-bottom:1px solid var(--rule); margin-bottom:4px; padding-bottom:4px;";
   results.appendChild(addLi);
+
+  if(!indexReady){
+    const li = document.createElement("li");
+    li.style.cssText="padding:9px;color:var(--ink-soft);font-size:12.5px";
+    li.textContent = "Loading deals…";
+    results.appendChild(li);
+    return;
+  }
+
+  const list = searchIndex
+    .filter(d => !taken.has(d.id) && !isClosed(d) && !isBlankNote(d))
+    .filter(d => d.name.toLowerCase().includes(ql))
+    .slice(0, 40);
 
   if(!list.length){
     const li = document.createElement("li");
@@ -1247,9 +1324,20 @@ function drawResults(q){
       addr.textContent = d.address;
       btn.appendChild(addr);
     }
-    btn.onclick = () => {
-      rec.pinned.unshift({dealId:d.id, folded:false, aside:false, touchedAt:Date.now()});
-      saveUserBoard(viewing); closePin(); render();
+    btn.onclick = async () => {
+      if(btn.disabled) return;
+      btn.disabled = true;
+      try{
+        if(!dealsById.has(d.id)){
+          const [full] = await loadItemsByIds([d.id]);
+          if(full){ deals.push(full); dealsById.set(full.id, full); }
+        }
+        rec.pinned.unshift({dealId:d.id, folded:false, aside:false, touchedAt:Date.now()});
+        saveUserBoard(viewing); closePin(); render();
+      }catch(e){
+        console.error(e);
+        btn.disabled = false;
+      }
     };
     li.appendChild(btn); results.appendChild(li);
   });
@@ -1279,7 +1367,12 @@ function buildPicker(){
     addNoteBtn.disabled = !editable();
     stateEl.style.display=""; stateEl.innerHTML = "<strong>Loading</strong>Opening that board.";
     board.innerHTML = "";
-    await loadUserBoard(viewing);
+    const rec = await loadUserBoard(viewing);
+    const missing = rec.pinned.map(p => p.dealId).filter(id => !dealsById.has(id));
+    if(missing.length){
+      const fetched = await loadItemsByIds(missing);
+      fetched.forEach(d => { deals.push(d); dealsById.set(d.id, d); });
+    }
     render();
   };
 }
@@ -1309,12 +1402,23 @@ monday.listen("context", async res => {
   ctx = c; boardId = String(bId);
 
   try{
-    await loadBoard();
+    await loadMeta();
     viewing = meId;
-    await loadUserBoard(viewing);
+    const rec = await loadUserBoard(viewing);
+    const [pinnedDeals, stickyDeals] = await Promise.all([
+      loadItemsByIds(rec.pinned.map(p => p.dealId)),
+      loadStickyGroup(),
+    ]);
+    const seen = new Map();
+    pinnedDeals.forEach(d => seen.set(d.id, d));
+    stickyDeals.forEach(d => seen.set(d.id, d));
+    deals = Array.from(seen.values());
+    dealsById = new Map(deals.map(d => [d.id, d]));
+
     buildPicker();
     addNoteBtn.disabled = false;
     render();
+    loadSearchIndex();  // background — board is already visible by now
   }catch(e){
     console.error(e);
     if(String(e.message).startsWith("SETUP:")){
