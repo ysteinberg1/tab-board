@@ -1115,6 +1115,13 @@ function cardEl({deal, pin, index}){
         pen.onclick = e => { e.stopPropagation(); renamingCard.add(deal.id); render(); };
         h3.appendChild(document.createTextNode("\u2009"));
         h3.appendChild(pen);
+
+        const conv = document.createElement("button");
+        conv.className="open"; conv.innerHTML=ICON_CONVERT;
+        conv.title="Convert to deal"; conv.setAttribute("aria-label","Convert "+deal.name+" to a deal");
+        conv.onclick = e => { e.stopPropagation(); convertToDeal(deal); };
+        h3.appendChild(document.createTextNode("\u2009"));
+        h3.appendChild(conv);
       }
     }
     nameWrap.appendChild(h3);
@@ -1136,14 +1143,6 @@ function cardEl({deal, pin, index}){
   }
 
   if(editable() && !isLoose){
-    if(isBlankNote(deal)){
-      const conv = document.createElement("button");
-      conv.className="icon-btn"; conv.innerHTML=ICON_CONVERT;
-      conv.title="Convert to deal"; conv.setAttribute("aria-label","Convert "+deal.name+" to a deal");
-      conv.onclick = e => { e.stopPropagation(); convertToDeal(deal); };
-      controls.appendChild(conv);
-    }
-
     const aside = document.createElement("button");
     aside.className = "icon-btn" + (pin.aside ? " on" : "");
     aside.innerHTML = ICON_CLOCK;
