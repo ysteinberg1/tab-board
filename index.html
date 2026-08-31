@@ -691,24 +691,28 @@ async function loadStickyGroup(){
   return ((grp && grp.items_page.items) || []).map(toDeal);
 }
 
-/* lightweight, paginated scan of the whole board — name/status/address
-   only, no notes or links — used solely to power the "pin a deal" search.
-   Runs in the background after the board itself is already on screen. */
+/* lightweight, paginated scan of the Active Deals group only — name/status/
+   address, no notes or links — used solely to power the "pin a deal" search.
+   Scoped to just that one group so Closed Won, Lost, and Sticky Notes are
+   never fetched at all, not just filtered out afterward. Runs in the
+   background after the board itself is already on screen. */
 async function loadSearchIndex(){
   const cols = [CFG.STATUS_COL, CFG.ADDRESS_COL];
   const items = [];
   try{
     let data = await api(`
-      query ($board: [ID!], $cols: [String!]) {
+      query ($board: [ID!], $cols: [String!], $g: [String!]) {
         boards (ids: $board) {
-          items_page (limit: 250) {
-            cursor
-            items { id name group { id } column_values (ids: $cols) { id text } }
+          groups (ids: $g) {
+            items_page (limit: 250) {
+              cursor
+              items { id name group { id } column_values (ids: $cols) { id text } }
+            }
           }
         }
       }
-    `, {board: [String(boardId)], cols});
-    let page = data.boards && data.boards[0] && data.boards[0].items_page;
+    `, {board: [String(boardId)], cols, g: [CFG.ACTIVE_GROUP]});
+    let page = data.boards && data.boards[0] && data.boards[0].groups && data.boards[0].groups[0] && data.boards[0].groups[0].items_page;
     items.push(...((page && page.items) || []));
     let cursor = page && page.cursor;
     while(cursor && items.length < CFG.MAX_ITEMS){
@@ -1089,19 +1093,22 @@ function cardEl({deal, pin, index}){
     const h3 = document.createElement("h3");
     h3.className="card-name"; h3.textContent = isLoose ? "Loose Ends" : deal.name;
     if(deal){
-      /* the open-in-Monday icon is an inline child of the heading itself,
-         not a flex sibling - so it always sits right after the trailing
-         word instead of being pushed to a line of its own */
-      const op = document.createElement("button");
-      op.className="open"; op.innerHTML=ICON_OPEN;
-      op.title="Open in Monday"; op.setAttribute("aria-label","Open "+deal.name+" in Monday");
-      op.onclick = e => {
-        e.stopPropagation();
-        monday.execute("openItemCard", {itemId: Number(deal.id)});
-      };
-      h3.appendChild(document.createTextNode("\u2009"));
-      h3.appendChild(op);
-      if(editable()){
+      /* a blank note isn't a real deal yet, so there's nothing on Monday
+         worth opening \u2014 only real deals get the open-in-Monday icon */
+      if(!isBlankNote(deal)){
+        const op = document.createElement("button");
+        op.className="open"; op.innerHTML=ICON_OPEN;
+        op.title="Open in Monday"; op.setAttribute("aria-label","Open "+deal.name+" in Monday");
+        op.onclick = e => {
+          e.stopPropagation();
+          monday.execute("openItemCard", {itemId: Number(deal.id)});
+        };
+        h3.appendChild(document.createTextNode("\u2009"));
+        h3.appendChild(op);
+      }
+      /* rename is only for not-yet-converted notes \u2014 a real deal's name
+         is the customer's name and shouldn't be casually editable here */
+      if(editable() && isBlankNote(deal)){
         const pen = document.createElement("button");
         pen.className="open"; pen.innerHTML=ICON_PENCIL;
         pen.title="Rename"; pen.setAttribute("aria-label","Rename "+deal.name);
@@ -1112,14 +1119,14 @@ function cardEl({deal, pin, index}){
     }
     nameWrap.appendChild(h3);
   }
-  if(deal) nameWrap.appendChild(statusEl(deal.stage,"status-below"));
+  if(deal && !isBlankNote(deal)) nameWrap.appendChild(statusEl(deal.stage,"status-below"));
   head.appendChild(nameWrap);
 
   const controls = document.createElement("div");
   controls.className="controls";
 
   if(deal){
-    controls.appendChild(statusEl(deal.stage,"status-inline"));
+    if(!isBlankNote(deal)) controls.appendChild(statusEl(deal.stage,"status-inline"));
     const badge = document.createElement("span");
     badge.className = "since " + heat(deal, pin);
     const lt = lastTouched(deal, pin);
