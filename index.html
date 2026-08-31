@@ -82,21 +82,34 @@
   .btn:disabled{opacity:.4; cursor:not-allowed}
   .btn:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
 
-  .btn.stamp{
-    font-family:"Archivo",sans-serif; font-variation-settings:"wdth" 112,"wght" 700;
-    font-size:12.5px; letter-spacing:.09em; text-transform:uppercase;
-    color:var(--ink); background:#E8BE4E; border:1px solid #D6A836;
-    padding:9px 22px;
-    box-shadow:0 3px 0 #C79A2E;
-    transition:transform .08s ease, box-shadow .08s ease, background .12s ease;
+  .btn.addnote{
+    position:relative; width:44px; height:34px; padding:0;
+    background:var(--sticky); border:1px solid var(--sticky-edge);
+    display:grid; place-items:center; overflow:hidden;
+    box-shadow:0 1px 1px rgba(42,38,23,.07);
+    transition:box-shadow .15s ease, transform .15s ease, background .12s ease;
   }
-  .btn.stamp:hover:not(:disabled){
-    background:#ECC65E; transform:translateY(-1px); box-shadow:0 4px 0 #C79A2E;
+  .btn.addnote:hover:not(:disabled){
+    background:var(--sticky); transform:translateY(-1px);
+    box-shadow:0 6px 12px -7px rgba(42,38,23,.4);
   }
-  .btn.stamp:active:not(:disabled){
-    transform:translateY(2px); box-shadow:0 1px 0 #C79A2E;
+  .btn.addnote .addnote-plus{
+    font-family:"Archivo",sans-serif; font-size:19px; font-weight:400;
+    color:var(--ink-soft); line-height:1;
+    transition:color .15s ease, transform .15s ease;
   }
-  .btn.stamp:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
+  .btn.addnote:hover:not(:disabled) .addnote-plus{ color:var(--marker); transform:scale(1.08); }
+  .btn.addnote .addnote-fold{
+    position:absolute; right:0; bottom:0; width:11px; height:11px;
+    background:linear-gradient(135deg, transparent 50%, var(--sticky-fold) 50%);
+    border-left:1px solid rgba(42,38,23,.08); border-top:1px solid rgba(42,38,23,.08);
+    transition:width .18s cubic-bezier(.2,.8,.3,1), height .18s cubic-bezier(.2,.8,.3,1), border-color .18s ease;
+  }
+  .btn.addnote:hover:not(:disabled) .addnote-fold{
+    width:19px; height:19px;
+    border-left-color:rgba(42,38,23,.22); border-top-color:rgba(42,38,23,.22);
+  }
+  .btn.addnote:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
 
   .board{
     padding:22px; display:grid;
@@ -340,7 +353,10 @@
       <span class="readonly" id="ro">Read only</span>
     </div>
   </div>
-  <button class="btn stamp" id="pinBtn">+ Pin a Deal</button>
+  <button class="btn addnote" id="addNoteBtn" title="Add a sticky note" aria-label="Add a sticky note">
+    <span class="addnote-plus">+</span>
+    <span class="addnote-fold"></span>
+  </button>
   <div class="rail-side right">
     <span class="saving" id="saving">Saving</span>
   </div>
@@ -380,6 +396,10 @@ const CFG = {
     {id:"98067893", name:"Chuny Koenig"},
     {id:"64132011", name:"Shragie Gobioff"},
   ],
+  // Blank sticky notes land here as real Monday items, invisible to the
+  // shared "pin a deal" search, until someone converts them to a real deal.
+  STICKY_GROUP: "group_mm6rsksd",
+  ACTIVE_GROUP: "topics",
 };
 
 const DAY = 86400000;
@@ -456,6 +476,7 @@ function since(ts){
   return Math.round(d/30)+"mo";
 }
 function isClosed(deal){ return CFG.CLOSED_LABELS.includes(deal.stage); }
+function isBlankNote(deal){ return deal.groupId === CFG.STICKY_GROUP; }
 function daysLeft(deal){
   if(!deal.closedAt) return CFG.CLEAR_AFTER;
   return CFG.CLEAR_AFTER - Math.floor((Date.now()-deal.closedAt)/DAY);
@@ -554,6 +575,7 @@ async function loadBoard(){
           items {
             id
             name
+            group { id }
             column_values (ids: $cols) { id text value }
           }
         }
@@ -617,6 +639,7 @@ async function loadBoard(){
       closedAt,
       notes: (cv[CFG.NOTES_COL] && cv[CFG.NOTES_COL].text) || "",
       links: parseLinks(cv[CFG.LINKS_COL] && cv[CFG.LINKS_COL].text),
+      groupId: it.group ? it.group.id : null,
     };
   });
   dealsById = new Map(deals.map(d => [d.id, d]));
@@ -1122,7 +1145,45 @@ function render(justAdded){
 const veil = document.getElementById("veil");
 const search = document.getElementById("search");
 const results = document.getElementById("results");
-const pinBtn = document.getElementById("pinBtn");
+const addNoteBtn = document.getElementById("addNoteBtn");
+
+function nextStickyName(){
+  let max = 0;
+  deals.forEach(d => {
+    const m = /^Sticky Note (\d+)$/i.exec(d.name.trim());
+    if(m) max = Math.max(max, parseInt(m[1],10));
+  });
+  return "Sticky Note " + (max+1);
+}
+
+async function createBlankNote(){
+  const name = nextStickyName();
+  addNoteBtn.disabled = true;
+  saveStart();
+  try{
+    const data = await api(`
+      mutation ($board: ID!, $group: String!, $name: String!) {
+        create_item (board_id:$board, group_id:$group, item_name:$name) { id }
+      }
+    `, {board:String(boardId), group:CFG.STICKY_GROUP, name});
+    const id = String(data.create_item.id);
+    const deal = {
+      id, name, stage:"", address:"", closedAt:null,
+      notes:"", links:[], groupId: CFG.STICKY_GROUP,
+    };
+    deals.push(deal); dealsById.set(id, deal);
+    const rec = myBoard();
+    rec.pinned.unshift({dealId:id, folded:false, aside:false, touchedAt:Date.now()});
+    saveUserBoard(viewing);
+    saveDone(true);
+    closePin(); render();
+  }catch(e){
+    console.error(e);
+    saveDone(false, "Couldn't create note");
+  }finally{
+    addNoteBtn.disabled = false;
+  }
+}
 
 function openPin(){
   if(!editable()) return;
@@ -1135,10 +1196,20 @@ function drawResults(q){
   const taken = new Set(rec.pinned.map(p => p.dealId));
   const ql = q.toLowerCase();
   const list = deals
-    .filter(d => !taken.has(d.id) && !isClosed(d))
+    .filter(d => !taken.has(d.id) && !isClosed(d) && !isBlankNote(d))
     .filter(d => d.name.toLowerCase().includes(ql))
     .slice(0, 40);
   results.innerHTML = "";
+
+  const addLi = document.createElement("li");
+  const addBtn = document.createElement("button");
+  addBtn.style.cssText = "font-weight:600; color:var(--marker);";
+  addBtn.innerHTML = '<span style="flex:none">+</span><span style="flex:1">Add new sticky note</span>';
+  addBtn.onclick = createBlankNote;
+  addLi.appendChild(addBtn);
+  addLi.style.cssText = "border-bottom:1px solid var(--rule); margin-bottom:4px; padding-bottom:4px;";
+  results.appendChild(addLi);
+
   if(!list.length){
     const li = document.createElement("li");
     li.style.cssText="padding:9px;color:var(--ink-soft);font-size:12.5px";
@@ -1186,7 +1257,7 @@ function buildPicker(){
     viewing = e.target.value;
     expanded.clear(); editing.clear(); renaming.clear();
     roBadge.classList.toggle("on", !editable());
-    pinBtn.disabled = !editable();
+    addNoteBtn.disabled = !editable();
     stateEl.style.display=""; stateEl.innerHTML = "<strong>Loading</strong>Opening that board.";
     board.innerHTML = "";
     await loadUserBoard(viewing);
@@ -1194,7 +1265,7 @@ function buildPicker(){
   };
 }
 
-pinBtn.onclick = openPin;
+addNoteBtn.onclick = openPin;
 search.oninput = e => drawResults(e.target.value);
 veil.onclick = e => { if(e.target === veil) closePin(); };
 document.addEventListener("keydown", e => { if(e.key==="Escape") closePin(); });
@@ -1223,7 +1294,7 @@ monday.listen("context", async res => {
     viewing = meId;
     await loadUserBoard(viewing);
     buildPicker();
-    pinBtn.disabled = false;
+    addNoteBtn.disabled = false;
     render();
   }catch(e){
     console.error(e);
