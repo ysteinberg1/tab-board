@@ -1314,11 +1314,14 @@ function render(justAdded){
   board.innerHTML = "";
   stateEl.style.display = "none";
 
-  /* closed deals fall off after the grace window — the Monday item is untouched */
+  /* closed deals fall off after the grace window — the Monday item is untouched.
+     A pin whose deal isn't currently loaded is left alone rather than dropped:
+     under the targeted-load architecture "not loaded yet" is not proof the deal
+     is gone, and a pin must never be erased on a guess. */
   const before = rec.pinned.length;
   rec.pinned = rec.pinned.filter(p => {
     const d = dealsById.get(p.dealId);
-    if(!d) return false;
+    if(!d) return true;
     if(!isClosed(d)) return true;
     return daysLeft(d) > 0;
   });
