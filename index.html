@@ -233,6 +233,13 @@
     border-radius:2px; padding:2px 6px;
   }
   .slip input.rename:focus{outline:2px solid var(--ink); outline-offset:-1px}
+  input.rename-card{
+    width:100%; font-family:"Archivo",sans-serif; font-variation-settings:"wdth" 112,"wght" 700;
+    font-size:13.5px; letter-spacing:.055em; text-transform:uppercase;
+    color:var(--ink); background:#fff; border:1px solid var(--rule);
+    border-radius:2px; padding:3px 6px;
+  }
+  input.rename-card:focus{outline:2px solid var(--ink); outline-offset:-1px}
   .slip .tools{display:flex; align-items:center; gap:1px; flex:none}
   .slip .tools button{
     border:0; background:transparent; cursor:pointer; color:var(--ink-faint);
@@ -395,14 +402,15 @@ const CFG = {
   // Only these people show up in the "Viewing" picker (plus whoever is
   // actually logged in, so an owner previewing always sees themselves too).
   SALES_TEAM: [
-    {id:"64185041", name:"Ari Weber"},
-    {id:"98067893", name:"Chuny Koenig"},
-    {id:"64132011", name:"Shragie Gobioff"},
+    {id:"64185041", name:"Ari Weber", salesLabel:"Ari"},
+    {id:"98067893", name:"Chuny Koenig", salesLabel:"Chuny"},
+    {id:"64132011", name:"Shragie Gobioff", salesLabel:"Shragie"},
   ],
   // Blank sticky notes land here as real Monday items, invisible to the
   // shared "pin a deal" search, until someone converts them to a real deal.
   STICKY_GROUP: "group_mm6rsksd",
   ACTIVE_GROUP: "topics",
+  SALESMAN_COL: "color_mkv0qrwq",   // set on Convert to deal; "Other" for non-team creators
 };
 
 const DAY = 86400000;
@@ -431,6 +439,7 @@ let indexReady = false;    // true once searchIndex has finished its first load
 const expanded = new Set();
 const editing = new Set();
 const renaming = new Set();
+const renamingCard = new Set();  // deal ids currently showing a rename input for the card name
 let dragCard = null, dragLink = null;
 let uid = 0;
 
@@ -494,6 +503,7 @@ const ICON_CLOCK  = icon('<circle cx="8" cy="9" r="5.2"/><path d="M8 6.4V9l1.8 1
 const ICON_X      = icon('<path d="M4 4l8 8M12 4l-8 8"/>');
 const ICON_PENCIL = icon('<path d="M11.2 2.9l1.9 1.9L6 11.9l-2.4.5.5-2.4z"/>');
 const ICON_OPEN   = icon('<path d="M13 9v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H7"/><path d="M10 2.5h3.5V6"/><path d="M7.5 8.5l6-6"/>');
+const ICON_CONVERT = icon('<path d="M3 8h9"/><path d="M8.5 4.5L12 8l-3.5 3.5"/>');
 
 /* readable names from a bare URL */
 const SMALL = new Set(["of","the","and","at","in","on","for","to","a"]);
@@ -812,6 +822,74 @@ function saveColumn(dealId, colId, value){
 function saveLinks(deal){ saveColumn(deal.id, CFG.LINKS_COL, serializeLinks(deal.links)); }
 function saveNotes(deal){ saveColumn(deal.id, CFG.NOTES_COL, deal.notes || ""); }
 
+/* the item's own name isn't a normal column — it's set through the
+   "name" key in change_multiple_column_values instead */
+async function saveItemName(deal, name){
+  const prev = deal.name;
+  deal.name = name;
+  saveStart();
+  try{
+    await api(`
+      mutation ($board: ID!, $item: ID!, $values: JSON!) {
+        change_multiple_column_values (board_id:$board, item_id:$item, column_values:$values) { id }
+      }
+    `, {board:String(boardId), item:String(deal.id), values: JSON.stringify({name})});
+    saveDone(true);
+  }catch(e){
+    console.error(e);
+    deal.name = prev;
+    saveDone(false, "Couldn't rename");
+    render();
+  }
+}
+
+/* moves a not-yet-converted note into Active Deals and assigns the
+   Salesman column to whoever converted it — "Other" for anyone not on
+   the sales team (e.g. an owner/admin previewing the app) */
+async function convertToDeal(deal){
+  saveStart();
+  try{
+    await api(`
+      mutation ($item: ID!, $group: String!) {
+        move_item_to_group (item_id:$item, group_id:$group) { id }
+      }
+    `, {item:String(deal.id), group:CFG.ACTIVE_GROUP});
+    const person = CFG.SALES_TEAM.find(p => p.id === meId);
+    const label = person ? person.salesLabel : "Other";
+    await api(`
+      mutation ($board: ID!, $item: ID!, $values: JSON!) {
+        change_multiple_column_values (board_id:$board, item_id:$item, column_values:$values) { id }
+      }
+    `, {board:String(boardId), item:String(deal.id), values: JSON.stringify({[CFG.SALESMAN_COL]: {label}})});
+    deal.groupId = CFG.ACTIVE_GROUP;
+    saveDone(true);
+    render();
+  }catch(e){
+    console.error(e);
+    saveDone(false, "Couldn't convert");
+  }
+}
+
+/* only reachable for a note still sitting in the Sticky Notes group —
+   nobody else could have found or pinned it, so this can never delete
+   something out from under another salesman */
+async function deleteBlankNote(deal, pin){
+  saveStart();
+  try{
+    await api(`mutation ($item: ID!) { delete_item (item_id:$item) { id } }`, {item:String(deal.id)});
+    const rec = myBoard();
+    rec.pinned = rec.pinned.filter(p => p !== pin);
+    dealsById.delete(deal.id);
+    deals = deals.filter(d => d.id !== deal.id);
+    saveUserBoard(viewing);
+    saveDone(true);
+    render();
+  }catch(e){
+    console.error(e);
+    saveDone(false, "Couldn't delete");
+  }
+}
+
 /* ============================================================
    Touch tracking — moving/folding is not working the deal
    ============================================================ */
@@ -991,23 +1069,49 @@ function cardEl({deal, pin, index}){
 
   const nameWrap = document.createElement("div");
   nameWrap.className="name-wrap";
-  const h3 = document.createElement("h3");
-  h3.className="card-name"; h3.textContent = isLoose ? "Loose Ends" : deal.name;
-  if(deal){
-    /* the open-in-Monday icon is an inline child of the heading itself,
-       not a flex sibling — so it always sits right after the trailing
-       word instead of being pushed to a line of its own */
-    const op = document.createElement("button");
-    op.className="open"; op.innerHTML=ICON_OPEN;
-    op.title="Open in Monday"; op.setAttribute("aria-label","Open "+deal.name+" in Monday");
-    op.onclick = e => {
-      e.stopPropagation();
-      monday.execute("openItemCard", {itemId: Number(deal.id)});
+
+  if(deal && editable() && renamingCard.has(deal.id)){
+    const inp = document.createElement("input");
+    inp.className="rename-card"; inp.value = deal.name;
+    inp.onblur = () => {
+      const v = inp.value.trim();
+      renamingCard.delete(deal.id);
+      if(v && v !== deal.name) saveItemName(deal, v);
+      render();
     };
-    h3.appendChild(document.createTextNode("\u2009"));
-    h3.appendChild(op);
+    inp.onkeydown = e => {
+      if(e.key==="Enter") inp.blur();
+      if(e.key==="Escape"){ renamingCard.delete(deal.id); render(); }
+    };
+    nameWrap.appendChild(inp);
+    setTimeout(()=>{ inp.focus(); inp.select(); },0);
+  }else{
+    const h3 = document.createElement("h3");
+    h3.className="card-name"; h3.textContent = isLoose ? "Loose Ends" : deal.name;
+    if(deal){
+      /* the open-in-Monday icon is an inline child of the heading itself,
+         not a flex sibling - so it always sits right after the trailing
+         word instead of being pushed to a line of its own */
+      const op = document.createElement("button");
+      op.className="open"; op.innerHTML=ICON_OPEN;
+      op.title="Open in Monday"; op.setAttribute("aria-label","Open "+deal.name+" in Monday");
+      op.onclick = e => {
+        e.stopPropagation();
+        monday.execute("openItemCard", {itemId: Number(deal.id)});
+      };
+      h3.appendChild(document.createTextNode("\u2009"));
+      h3.appendChild(op);
+      if(editable()){
+        const pen = document.createElement("button");
+        pen.className="open"; pen.innerHTML=ICON_PENCIL;
+        pen.title="Rename"; pen.setAttribute("aria-label","Rename "+deal.name);
+        pen.onclick = e => { e.stopPropagation(); renamingCard.add(deal.id); render(); };
+        h3.appendChild(document.createTextNode("\u2009"));
+        h3.appendChild(pen);
+      }
+    }
+    nameWrap.appendChild(h3);
   }
-  nameWrap.appendChild(h3);
   if(deal) nameWrap.appendChild(statusEl(deal.stage,"status-below"));
   head.appendChild(nameWrap);
 
@@ -1025,6 +1129,14 @@ function cardEl({deal, pin, index}){
   }
 
   if(editable() && !isLoose){
+    if(isBlankNote(deal)){
+      const conv = document.createElement("button");
+      conv.className="icon-btn"; conv.innerHTML=ICON_CONVERT;
+      conv.title="Convert to deal"; conv.setAttribute("aria-label","Convert "+deal.name+" to a deal");
+      conv.onclick = e => { e.stopPropagation(); convertToDeal(deal); };
+      controls.appendChild(conv);
+    }
+
     const aside = document.createElement("button");
     aside.className = "icon-btn" + (pin.aside ? " on" : "");
     aside.innerHTML = ICON_CLOCK;
@@ -1047,9 +1159,15 @@ function cardEl({deal, pin, index}){
 
     const un = document.createElement("button");
     un.className="icon-btn kill"; un.innerHTML=ICON_X;
-    un.title="Take off the board"; un.setAttribute("aria-label","Take this note off the board");
+    un.title = isBlankNote(deal) ? "Delete this note" : "Take off the board";
+    un.setAttribute("aria-label", isBlankNote(deal) ? "Delete this note" : "Take this note off the board");
     un.onclick = e => {
       e.stopPropagation();
+      if(isBlankNote(deal)){
+        if(!confirm(`Delete "${deal.name}"? It hasn't been converted to a deal, so this removes it from Monday entirely and can't be undone from here.`)) return;
+        deleteBlankNote(deal, pin);
+        return;
+      }
       const n = links.length;
       if(n && !confirm(`Take ${deal.name} off your board? The ${n} ${n===1?"link stays":"links stay"} on the Monday item.`)) return;
       rec.pinned = rec.pinned.filter(p => p !== pin);
@@ -1362,7 +1480,7 @@ function buildPicker(){
   whoSel.value = viewing;
   whoSel.onchange = async e => {
     viewing = e.target.value;
-    expanded.clear(); editing.clear(); renaming.clear();
+    expanded.clear(); editing.clear(); renaming.clear(); renamingCard.clear();
     roBadge.classList.toggle("on", !editable());
     addNoteBtn.disabled = !editable();
     stateEl.style.display=""; stateEl.innerHTML = "<strong>Loading</strong>Opening that board.";
