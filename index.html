@@ -83,7 +83,7 @@
   .btn:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
 
   .btn.addnote{
-    position:relative; width:44px; height:34px; padding:0;
+    position:relative; width:62px; height:46px; padding:0;
     background:var(--sticky); border:1px solid var(--sticky-edge);
     display:grid; place-items:center; overflow:hidden;
     box-shadow:0 1px 1px rgba(42,38,23,.07);
@@ -91,22 +91,22 @@
   }
   .btn.addnote:hover:not(:disabled){
     background:var(--sticky); transform:translateY(-1px);
-    box-shadow:0 6px 12px -7px rgba(42,38,23,.4);
+    box-shadow:0 8px 15px -8px rgba(42,38,23,.4);
   }
   .btn.addnote .addnote-plus{
-    font-family:"Archivo",sans-serif; font-size:19px; font-weight:400;
+    font-family:"Archivo",sans-serif; font-size:25px; font-weight:400;
     color:var(--ink-soft); line-height:1;
     transition:color .15s ease, transform .15s ease;
   }
   .btn.addnote:hover:not(:disabled) .addnote-plus{ color:var(--marker); transform:scale(1.08); }
   .btn.addnote .addnote-fold{
-    position:absolute; right:0; bottom:0; width:11px; height:11px;
+    position:absolute; right:0; bottom:0; width:15px; height:15px;
     background:linear-gradient(135deg, transparent 50%, var(--sticky-fold) 50%);
     border-left:1px solid rgba(42,38,23,.08); border-top:1px solid rgba(42,38,23,.08);
     transition:width .18s cubic-bezier(.2,.8,.3,1), height .18s cubic-bezier(.2,.8,.3,1), border-color .18s ease;
   }
   .btn.addnote:hover:not(:disabled) .addnote-fold{
-    width:19px; height:19px;
+    width:26px; height:26px;
     border-left-color:rgba(42,38,23,.22); border-top-color:rgba(42,38,23,.22);
   }
   .btn.addnote:focus-visible{outline:2px solid var(--ink); outline-offset:2px}
@@ -566,7 +566,7 @@ function serializeLinks(links){
 async function loadBoard(){
   const neededCols = [CFG.STATUS_COL, CFG.ADDRESS_COL, CFG.NOTES_COL, CFG.LINKS_COL];
   const data = await api(`
-    query ($board: [ID!], $cols: [String!]) {
+    query ($board: [ID!], $cols: [String!], $stickyGroup: [String!]) {
       boards (ids: $board) {
         name
         owners { id }
@@ -579,10 +579,20 @@ async function loadBoard(){
             column_values (ids: $cols) { id text value }
           }
         }
+        groups (ids: $stickyGroup) {
+          items_page (limit: 200) {
+            items {
+              id
+              name
+              group { id }
+              column_values (ids: $cols) { id text value }
+            }
+          }
+        }
       }
       me { id name is_admin }
     }
-  `, {board: [String(boardId)], cols: neededCols});
+  `, {board: [String(boardId)], cols: neededCols, stickyGroup: [CFG.STICKY_GROUP]});
 
   const board = data.boards && data.boards[0];
   if(!board) throw new Error("Board not found");
@@ -620,7 +630,7 @@ async function loadBoard(){
     throw new Error("SETUP:" + missing.join(", "));
   }
 
-  deals = (board.items_page.items||[]).map(it => {
+  const toDeal = it => {
     const cv = {};
     (it.column_values||[]).forEach(c => cv[c.id] = c);
     const st = statusColId ? cv[statusColId] : null;
@@ -641,7 +651,16 @@ async function loadBoard(){
       links: parseLinks(cv[CFG.LINKS_COL] && cv[CFG.LINKS_COL].text),
       groupId: it.group ? it.group.id : null,
     };
-  });
+  };
+
+  /* the Sticky Notes group is fetched on its own so a note is never lost
+     off the end of the general items_page on a board this size (800+ items) */
+  const seen = new Map();
+  (board.items_page.items||[]).forEach(it => seen.set(String(it.id), toDeal(it)));
+  const stickyGroup = (board.groups && board.groups[0]) || null;
+  ((stickyGroup && stickyGroup.items_page.items) || []).forEach(it => seen.set(String(it.id), toDeal(it)));
+
+  deals = Array.from(seen.values());
   dealsById = new Map(deals.map(d => [d.id, d]));
 }
 
