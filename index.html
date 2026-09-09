@@ -176,6 +176,12 @@
   .open:focus-visible{outline:2px solid var(--ink); outline-offset:1px}
   .open svg{width:11px;height:11px;display:block}
 
+  /* The map pin carries the sales map's own Provident green (#235D05, sampled
+     off the logo) so it reads as a way into that app, not one more grey
+     control. */
+  .open.map{color:#235D05; opacity:.85}
+  .open.map:hover{color:#235D05; opacity:1; background:rgba(255,255,255,.6)}
+
   .status{
     display:inline-block; padding:1px 7px; border-radius:2px; max-width:100%;
     font-family:"Instrument Sans",sans-serif; font-size:10px; font-weight:600;
@@ -504,6 +510,12 @@ const ICON_X      = icon('<path d="M4 4l8 8M12 4l-8 8"/>');
 const ICON_PENCIL = icon('<path d="M11.2 2.9l1.9 1.9L6 11.9l-2.4.5.5-2.4z"/>');
 const ICON_OPEN   = icon('<path d="M13 9v3.5a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1H7"/><path d="M10 2.5h3.5V6"/><path d="M7.5 8.5l6-6"/>');
 const ICON_CONVERT = icon('<path d="M3 8h9"/><path d="M8.5 4.5L12 8l-3.5 3.5"/>');
+const ICON_MAP    = icon('<path d="M8 14.4s4.6-5.1 4.6-8.4a4.6 4.6 0 1 0-9.2 0c0 3.3 4.6 8.4 4.6 8.4z"/><circle cx="8" cy="6" r="1.7"/>');
+
+/* The field sales map opens a deal by its Monday item id — no address to
+   geocode, no coordinates to go stale. A deal too new to have a pin yet gets
+   fetched from Monday by the map itself. */
+const SALES_MAP = "https://field-sales-map-seven.vercel.app/?item=";
 
 /* readable names from a bare URL */
 const SMALL = new Set(["of","the","and","at","in","on","for","to","a"]);
@@ -1105,6 +1117,23 @@ function cardEl({deal, pin, index}){
         };
         h3.appendChild(document.createTextNode("\u2009"));
         h3.appendChild(op);
+
+        /* Straight to this deal on the sales map. Only when there's an address
+           to go to \u2014 a pin that leads nowhere is worse than no pin. It sits
+           beside the Monday icon because this card has no address line of its
+           own for it to live on. */
+        if(deal.address){
+          const mp = document.createElement("a");
+          mp.className="open map";
+          mp.href = SALES_MAP + deal.id;
+          mp.target = "_blank"; mp.rel = "noreferrer";
+          mp.innerHTML = ICON_MAP;
+          mp.title = "Show on the sales map";
+          mp.setAttribute("aria-label","Show "+deal.name+" on the sales map");
+          mp.onclick = e => e.stopPropagation();
+          h3.appendChild(document.createTextNode("\u2009"));
+          h3.appendChild(mp);
+        }
       }
       /* rename is only for not-yet-converted notes \u2014 a real deal's name
          is the customer's name and shouldn't be casually editable here */
