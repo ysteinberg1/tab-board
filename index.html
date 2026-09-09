@@ -702,19 +702,29 @@ async function loadMeta(){
 
 /* fetch specific items by id — used for whatever a user actually has
    pinned, instead of pulling the whole board every time the view opens */
+/* items(ids:) silently defaults to 25 and caps at 100 — ask for 40 ids and
+   Monday returns 25 with no error, which reads as "those deals were deleted".
+   A salesman with more than 25 pinned deals was quietly losing the rest off
+   his board. Ask for the cap explicitly and chunk anything longer. */
+const ITEMS_PER_QUERY = 100;
+
 async function loadItemsByIds(ids){
   if(!ids.length) return [];
-  const data = await api(`
-    query ($ids: [ID!], $cols: [String!]) {
-      items (ids: $ids) {
-        id
-        name
-        group { id }
-        column_values (ids: $cols) { id text value }
+  const out = [];
+  for(let i = 0; i < ids.length; i += ITEMS_PER_QUERY){
+    const data = await api(`
+      query ($ids: [ID!], $cols: [String!]) {
+        items (ids: $ids, limit: ${ITEMS_PER_QUERY}) {
+          id
+          name
+          group { id }
+          column_values (ids: $cols) { id text value }
+        }
       }
-    }
-  `, {ids, cols: DEAL_COLS});
-  return (data.items||[]).map(toDeal);
+    `, {ids: ids.slice(i, i + ITEMS_PER_QUERY), cols: DEAL_COLS});
+    out.push(...(data.items||[]).map(toDeal));
+  }
+  return out;
 }
 
 /* the Sticky Notes group is small and bounded (only ever holds
