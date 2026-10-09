@@ -1,7 +1,7 @@
 # Tab Board — Project Context
 
 > **Retired 2026-10-09.** The sticky notes moved into Deal Kanban as its NOTES
-> view (`..deal-kanban`). This app is now a one-time hand-over page: when
+> view (the deal-kanban repo). This app is now a one-time hand-over page: when
 > anyone opens it, it posts each person's board from Monday app storage to
 > Deal Kanban's /api/notes/import, then says where the notes went. The full old
 > app is in git history (commit 9aa3cc2 and before). Everything below describes
